@@ -1,0 +1,978 @@
+CREATE OR REPLACE PACKAGE BODY ACLU.DONATION_PRG IS
+  -- 22Oct2010, prm:  Modified procedure SetTrackingID
+  --                  and MaintainTRDonation -- prm/22Oct2010, D-01295 and D-01275 and D-01274
+
+  --v_firstmaintaintrd     BOOLEAN;          -- prm/22Oct2010, D-01295 and D-01275 and D-01274
+
+  -- 8/30/2013, PRM; D-04298; Modified MaintainTRDonation
+  --      Each of these jobs process all tranactions in the tran-queue. So
+  --      no need to flood the job queue with these jobs, as that creates a problem.
+
+
+PROCEDURE ApplyAckInfo (p_DonationID  IN Donation.Donation_ID%TYPE,
+                        p_AckDate     IN Donation.AckDate%TYPE,
+                        p_AckCode     IN Donation.Ack_Code%TYPE,
+                        p_AckStatus   IN Donation.No_Ack%TYPE,
+                        p_UpdUserID   IN Donation.UpdUserID%TYPE,
+                        p_UpdateCount OUT PLS_INTEGER) AS
+-----------------------------------------------------------------------------------------------
+--  Procedure Name: Apply_Ackdate
+--  Client Name:    All Base 4.1
+--  Date Written:   11/20/2003
+--  Author:         David Brown
+--  Purpose:        Update Acknowledgement Information to Donation
+-----------------------------------------------------------------------------------------------
+  v_Count                    PLS_INTEGER;
+  v_Donation                 Donation%ROWTYPE;
+BEGIN
+  IF (p_AckCode IS NOT NULL) AND (NOT VAL.AckCode(p_AckCode)) THEN
+    Raise_application_error(-20000, 'Invalid Acknowledgement Code - ' || p_AckCode);
+  END IF;
+  IF (p_AckStatus IS NOT NULL) THEN
+    SELECT COUNT(*) INTO v_Count FROM Ack_Status_Code a WHERE a.Code = p_AckStatus;
+    IF (v_Count = 0) THEN
+      Raise_application_error(-20000, 'Invalid Acknowledgement Status Code - ' || p_AckStatus);
+    END IF;
+  END IF;
+  BEGIN
+    SELECT * INTO v_Donation FROM Donation d WHERE d.Donation_Id = p_DonationID;
+    IF (p_AckCode IS NOT NULL) AND GEN.Differ(p_AckCode,v_Donation.Ack_Code)  OR
+       (p_AckDate IS NOT NULL) AND GEN.Differ(p_AckDate,v_Donation.AckDate) OR
+       (p_AckStatus IS NOT NULL) AND GEN.Differ(p_AckStatus,v_Donation.No_Ack) THEN
+       UPDATE Donation d
+         SET d.AckDate = DECODE(p_AckDate, NULL, d.AckDate, p_AckDate),
+             d.Ack_Code = decode(p_AckCode, NULL, d.Ack_Code,p_AckCode),
+             d.No_Ack = DECODE(p_AckStatus, NULL, d.No_Ack, p_AckStatus),
+             d.UpdUserID = p_UpdUserID
+         WHERE d.Donation_ID = p_DonationID;
+       p_UpdateCount := 1;
+     ELSE
+       p_UpdateCount := 0;
+     END IF;
+  EXCEPTION
+    WHEN OTHERS THEN
+      p_UpdateCount := 0;
+  END;
+END ApplyAckInfo;
+PROCEDURE ApplyAckInfo (p_DonationID  IN Donation.Donation_ID%TYPE,
+                        p_AckDate     IN Donation.AckDate%TYPE,
+                        p_AckCode     IN Donation.Ack_Code%TYPE,
+                        p_AckStatus   IN Donation.No_Ack%TYPE,
+                        p_AckVendor   IN Donation.Ack_Vendor%TYPE,
+                        p_UpdUserID   IN Donation.UpdUserID%TYPE,
+                        p_UpdateCount OUT PLS_INTEGER) AS
+-----------------------------------------------------------------------------------------------
+--  Procedure Name: Apply_Ackdate
+--  Client Name:    All Base 4.1
+--  Date Written:   11/20/2003
+--  Author:         David Brown
+--  Purpose:        Update Acknowledgement Information to Donation
+-----------------------------------------------------------------------------------------------
+  v_Count                    PLS_INTEGER;
+  v_Donation                 Donation%ROWTYPE;
+BEGIN
+  IF (p_AckCode IS NOT NULL) AND (NOT VAL.AckCode(p_AckCode)) THEN
+    Raise_application_error(-20000, 'Invalid Acknowledgement Code - ' || p_AckCode);
+  END IF;
+  IF (p_AckStatus IS NOT NULL) THEN
+    SELECT COUNT(*) INTO v_Count FROM Ack_Status_Code a WHERE a.Code = p_AckStatus;
+    IF (v_Count = 0) THEN
+      Raise_application_error(-20000, 'Invalid Acknowledgement Status Code - ' || p_AckStatus);
+    END IF;
+  END IF;
+  IF (p_AckVendor IS NOT NULL) THEN
+    SELECT COUNT(*) INTO v_Count FROM Vendor_Code a WHERE a.Code = p_AckVendor;
+    IF (v_Count = 0) THEN
+      Raise_application_error(-20000, 'Invalid Acknowledgement Vendor Code - ' || p_AckVendor);
+    END IF;
+  END IF;
+  BEGIN
+    SELECT * INTO v_Donation FROM Donation d WHERE d.Donation_Id = p_DonationID;
+    IF GEN.Differ(p_AckCode,v_Donation.Ack_Code)  OR
+       GEN.Differ(p_AckDate,v_Donation.AckDate) OR
+       GEN.Differ(p_AckStatus,v_Donation.No_Ack) OR
+       GEN.Differ(p_AckVendor,v_Donation.Ack_Vendor) THEN
+       UPDATE Donation d
+         SET d.AckDate    = p_AckDate,
+             d.Ack_Code   = p_AckCode,
+             d.No_Ack     = p_AckStatus,
+             d.Ack_Vendor = p_AckVendor,
+             d.UpdUserID  = p_UpdUserID
+         WHERE d.Donation_ID = p_DonationID;
+       p_UpdateCount := 1;
+     ELSE
+       p_UpdateCount := 0;
+     END IF;
+  EXCEPTION
+    WHEN OTHERS THEN
+      p_UpdateCount := 0;
+  END;
+END ApplyAckInfo;
+PROCEDURE BluebookStats(p_UpdateType VARCHAR2,
+                         p_AccountID Donation.Account_ID%TYPE,
+                         p_OldMCD Donation.MCD%TYPE,
+                         p_OldPrg Donation.Prg%TYPE,
+                         p_OldAmount Donation.Amount%TYPE,
+                         p_OldBDate Donation.BDate%TYPE,
+                         p_NewMCD Donation.MCD%TYPE,
+                         p_NewPrg Donation.Prg%TYPE,
+                         p_NewAmount Donation.Amount%TYPE,
+                         p_NewBDate Donation.BDate%TYPE,
+                         p_AdjCode Donation.Adj_Code%TYPE) AS
+----------------------------------------------------------------------------------------------
+--  Procedure Name: BluebookStats
+--  Client Name:    All Base 4.1
+--  Date Written:   3/31/2004
+--  Author:         David Brown
+--  Purpose:        Updates bluebook stats
+-----------------------------------------------------------------------------------------------
+  v_DonCounter Master.Don_Counter%TYPE;
+BEGIN
+  --DB-1833 : MH : 26-Aug-2009 : turn off security to update BB stats
+    VPD_PKG.BypassAllSecurity := 1;
+  BEGIN
+    SELECT m.Don_Counter INTO v_DonCounter FROM Master m WHERE m.Account_ID = p_AccountID;
+    IF (p_UpdateType IN ('D','U')) THEN
+      IF (p_OldAmount = 0) THEN
+         UPDATE Bluebook SET Non_Donors = Non_Donors - 1 WHERE Mail_Code = p_OldMCD AND Program = p_OldPrg;
+      ELSE
+         UPDATE Bluebook SET Donors = Donors - 1,Gross = Gross - p_OldAmount WHERE Mail_Code = p_OldMCD AND Program = p_OldPrg;
+      END IF;
+      IF (v_DonCounter = 0) AND (p_OldAmount >= 100) THEN
+        UPDATE Bluebook b SET b.Init_Amt_GE_100 = b.Init_Amt_GE_100 - p_OldAmount,b.Init_Num_GE_100 = b.Init_Num_GE_100 - 1,b.Amt_GE_100 = b.Amt_GE_100 - p_OldAmount,b.Num_GE_100 = b.Num_GE_100 - 1 WHERE p_OldMCD = Mail_Code AND p_OldPrg = Program;
+      ELSIF (v_DonCounter = 0) AND (p_OldAmount > 0) AND (p_OldAmount < 100) THEN
+        UPDATE Bluebook b SET b.Init_Amt_LT_100 = b.Init_Amt_LT_100 - p_OldAmount,b.Init_Num_LT_100 = b.Init_Num_LT_100 - 1,b.Amt_LT_100 = b.Amt_LT_100 - p_OldAmount,b.Num_LT_100 = b.Num_LT_100 - 1 WHERE p_OldMCD = Mail_Code AND p_OldPrg = Program;
+      ELSIF (p_OldAmount >= 100) THEN
+        UPDATE Bluebook b SET b.Amt_GE_100 = b.Amt_GE_100 - p_OldAmount,b.Num_GE_100 = b.Num_GE_100 - 1 WHERE p_OldMCD = Mail_Code AND p_OldPrg = Program;
+      ELSIF (p_OldAmount > 0) AND (p_OldAmount < 100) THEN
+        UPDATE Bluebook b SET b.Amt_LT_100 = b.Amt_LT_100 - p_OldAmount,b.Num_LT_100 = b.Num_LT_100 - 1 WHERE p_OldMCD = Mail_Code AND p_OldPrg = Program;
+      END IF;
+    END IF;
+    IF (p_UpdateType IN ('I','U')) AND (p_AdjCode <> 'A') THEN
+      IF (p_NewAmount = 0) THEN
+        UPDATE Bluebook SET First_Response = DECODE(NULL, First_Response, p_NewBDate, LEAST(First_Response, p_NewBDate)),Last_Response = DECODE(NULL, Last_Response, p_NewBDate, GREATEST(Last_Response, p_NewBDate)),Non_Donors = Non_Donors + 1 WHERE Mail_Code = p_NewMCD AND Program = p_NewPrg;
+      ELSE
+        UPDATE Bluebook SET First_Response = DECODE(NULL, First_Response, p_NewBDate, LEAST(First_Response, p_NewBDate)),Last_Response = DECODE(NULL, Last_Response, p_NewBDate, GREATEST(Last_Response, p_NewBDate)),Donors = Donors + 1,Gross = Gross + p_NewAmount WHERE Mail_Code = p_NewMCD AND Program = p_NewPrg;
+      END IF;
+      IF (v_DonCounter = 1) AND (p_NewAmount >= 100) THEN
+        UPDATE Bluebook b SET b.Init_Amt_GE_100 = b.Init_Amt_GE_100 + p_NewAmount,b.Init_Num_GE_100 = b.Init_Num_GE_100 + 1,b.Amt_GE_100 = b.Amt_GE_100 + p_NewAmount,b.Num_GE_100 = b.Num_GE_100 + 1 WHERE p_NewMCD = Mail_Code AND p_NewPrg = Program;
+      ELSIF (v_DonCounter = 1) AND (p_NewAmount > 0) AND (p_NewAmount < 100) THEN
+        UPDATE Bluebook b SET b.Init_Amt_LT_100 = b.Init_Amt_LT_100 + p_NewAmount,b.Init_Num_LT_100 = b.Init_Num_LT_100 + 1,b.Amt_LT_100 = b.Amt_LT_100 + p_NewAmount,b.Num_LT_100 = b.Num_LT_100 + 1 WHERE p_NewMCD = Mail_Code AND p_NewPrg = Program;
+      ELSIF (p_NewAmount >= 100) THEN
+        UPDATE Bluebook b SET b.Amt_GE_100 = b.Amt_GE_100 + p_NewAmount,b.Num_GE_100 = b.Num_GE_100 + 1 WHERE p_NewMCD = Mail_Code AND p_NewPrg = Program;
+      ELSIF (p_NewAmount > 0) AND (p_NewAmount < 100) THEN
+        UPDATE Bluebook b SET b.Amt_LT_100 = b.Amt_LT_100 + p_NewAmount,b.Num_LT_100 = b.Num_LT_100 + 1 WHERE p_NewMCD = Mail_Code AND p_NewPrg = Program;
+      END IF;
+    END IF;
+  EXCEPTION
+    WHEN OTHERS THEN
+      NULL;
+  END;
+  --DB-1833 : MH : 26-Aug-2009 : turn off security to update BB stats
+    VPD_PKG.BypassAllSecurity := 0;
+END BluebookStats;
+PROCEDURE SetRevenue(p_Type IN Donation.Type%TYPE,
+                     p_PledgeID IN Donation.Pledge_ID%TYPE,
+                     p_Revenue OUT Donation.Revenue%TYPE) AS
+----------------------------------------------------------------------------------------------
+--  Procedure Name: SetRevenue
+--  Client Name:    All Base 4.1
+--  Date Written:   5/8/2004
+--  Author:         David Brown
+--  Purpose:        Sets revenue flag on a donation
+-----------------------------------------------------------------------------------------------
+  v_Journaled                Pledge.Journaled%TYPE;
+BEGIN
+    IF (NVL(p_Type,'~') <> 'P') AND (NVL(p_PledgeID,0) > 0) THEN
+      BEGIN
+        SELECT Journaled
+          INTO v_Journaled
+          FROM Pledge p
+          WHERE p.Pledge_ID = p_PledgeID
+            AND p.Journaled = 'Y';
+        p_Revenue := 'N';
+      EXCEPTION
+        WHEN OTHERS THEN
+          p_Revenue := 'Y';
+      END;
+    ELSE
+      p_Revenue := 'Y';
+    END IF;
+END SetRevenue;
+PROCEDURE DftDepartment(p_PostedToGL IN Donation.Posted_To_GL%TYPE,
+                        p_MailCode IN Donation.MCD%TYPE,
+                        p_Program IN Donation.Prg%TYPE,
+                        p_AdjCode IN Donation.Adj_Code%TYPE,
+                        p_Department IN OUT Donation.Department%TYPE) AS
+----------------------------------------------------------------------------------------------
+--  Procedure Name: DftDepartment
+--  Client Name:    All Base 4.1
+--  Date Written:   5/8/2004
+--  Author:         David Brown
+--  Purpose:        Sets Department on a donation
+-----------------------------------------------------------------------------------------------
+BEGIN
+  IF (p_PostedToGL IS NULL) AND (p_AdjCode <> 'B') THEN
+    BEGIN
+      SELECT b.Department
+        INTO p_Department
+          FROM Bluebook b
+          WHERE b.Mail_Code = p_MailCode
+            AND b.Program = p_Program
+            AND b.Department IS NOT NULL;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        p_Department := p_Department;
+    END;
+  END IF;
+END DftDepartment;
+PROCEDURE DftFund(p_MailCode         IN Donation.MCD%TYPE,
+                  p_Program          IN Donation.Prg%TYPE DEFAULT '1',
+                  p_Fund             IN OUT Donation.Fund%TYPE,
+                  p_FundType         IN OUT Donation.Prg_Type%TYPE,
+                  p_Batch            IN Batch_Log.Batch%TYPE DEFAULT NULL,
+                  p_BDate            IN Batch_Log.BDate%TYPE DEFAULT NULL,
+                  p_BluebookFund     IN Bluebook.Fund%TYPE DEFAULT NULL,
+                  p_BluebookFundType IN Bluebook.Prg_Type%TYPE DEFAULT NULL,
+                  p_PhaseFund        IN Phase.Fund%TYPE DEFAULT NULL,
+                  p_PhaseFundType    IN Phase.Prg_Type%TYPE DEFAULT NULL) AS
+-----------------------------------------------------------------------------------------------
+--  Procedure Name: DftFund
+--  Client Name:    All Base 4.1
+--  Date Written:   5/7/2004
+--  Author:         David Brown
+--  Purpose:        Returns default value for Fund and Fund type from bluebook or phase
+--  History: 8/3/2005 DLB - Added logic to set the fund code based on the following priority
+--                          1.  User or batch process sets fund
+--                          2.  Check Batch_Log for default fund value
+--                          3.  Check Bluebook for default fund value
+--                          4.  Check Phase for default fund value
+--                          5.  Default to NOFUND
+-----------------------------------------------------------------------------------------------
+  v_BlueBookRec              BlueBook%ROWTYPE;
+  v_PhaseRec                 Phase%ROWTYPE;
+  v_BatchlogRec              Batch_Log%ROWTYPE;
+BEGIN
+  IF (p_Fund <> 'NOFUND') AND (p_Fund IS NOT NULL) THEN
+    p_Fund := p_Fund;
+  ELSE
+    IF (p_Batch IS NOT NULL) AND (p_BDate IS NOT NULL) THEN
+      BEGIN
+        SELECT *
+          INTO v_BatchLogRec
+          FROM Batch_Log b
+          WHERE b.Batch = p_Batch
+            AND b.BDate = p_Bdate;
+      EXCEPTION
+        WHEN OTHERS THEN
+          NULL;
+      END;
+    END IF;
+    IF (v_BatchLogRec.Default_Fund IS NOT NULL) AND (v_BatchLogRec.Default_Fund <> 'NOFUND') THEN
+      p_Fund := v_BatchLogRec.Default_Fund;
+    ELSIF (p_BluebookFund IS NULL) OR (p_BluebookFund = 'NOFUND') THEN
+      SELECT b.*
+        INTO v_BlueBookRec
+        FROM BlueBook b
+        WHERE b.Mail_Code = p_MailCode
+          AND b.Program = p_Program;
+      IF (v_BluebookRec.Fund <> 'NOFUND') THEN
+        p_Fund     := v_BluebookRec.Fund;
+      ELSIF (p_PhaseFund IS NULL) OR (p_PhaseFund = 'NOFUND') THEN
+        SELECT p.*
+          INTO v_PhaseRec
+          FROM Phase p
+          WHERE p.Pkg = v_BlueBookRec.Pkg
+            AND p.Phase = v_BlueBookRec.Phase;
+        p_Fund     := v_PhaseRec.Fund;
+      ELSE
+        p_Fund := p_PhaseFund;
+      END IF;
+    ELSE
+      p_Fund := p_BluebookFund;
+    END IF;
+  END IF;
+--  Always set Prg_Type to what is defined on fund_Code table.
+  SELECT f.Prg_Type INTO p_FundType FROM Fund_Code f WHERE f.code = p_Fund;
+END DftFund;
+
+
+PROCEDURE DftAcctCode(p_MCD      IN     Donation.MCD%TYPE,
+                      p_Prg      IN     Donation.Prg%TYPE,
+                      p_Fund     IN     Donation.Fund%TYPE,
+                      p_AcctCode IN OUT Donation.Acctcode%TYPE) AS
+--  DB-2115 : MH : 06-Oct-2009  --
+--  DB-2936 : DLB : 20010303 -- We are not able to rely on the configuration points so we need to modify the logic to work without them
+--  PP-3092 : DLB : 20100620 -- Pushed out as base change
+BEGIN
+  IF (p_AcctCode <> 'NOFUND') AND (p_AcctCode IS NOT NULL) THEN
+    p_AcctCode := p_AcctCode;
+  ELSE
+    BEGIN
+      SELECT AcctCode
+        INTO p_AcctCode
+        FROM BlueBook
+       WHERE Mail_Code = p_MCD
+         AND program = p_Prg;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        p_AcctCode := NULL;
+    END;
+    IF (p_AcctCode IS NOT NULL) AND (p_AcctCode <> 'NOFUND') THEN
+      p_AcctCode := p_AcctCode;
+    ELSE
+      BEGIN
+        SELECT AcctCode
+          INTO p_AcctCode
+          FROM Fund_Code
+         WHERE Code = p_Fund;
+      EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+          p_AcctCode := 'NOFUND';
+      END;
+    END IF;
+  END IF;
+  IF NOT VAL.AcctCode(p_AcctCode) THEN
+    p_AcctCode := NULL;
+  END IF;
+END DftAcctCode;
+
+PROCEDURE DftAckCode(p_MailCode IN Donation.MCD%TYPE,
+                     p_Program IN Donation.Prg%TYPE DEFAULT '1',
+                     p_AckCode OUT Donation.Ack_Code%TYPE,
+                     p_BluebookAckCode IN Bluebook.Ack_Code%TYPE DEFAULT NULL,
+                     p_PhaseAckCode IN Phase.Ack_Code%TYPE DEFAULT NULL) AS
+-----------------------------------------------------------------------------------------------
+--  Procedure Name: DftFund
+--  Client Name:    All Base 4.1
+--  Date Written:   5/7/2004
+--  Author:         David Brown
+--  Purpose:        Returns default value for Fund and Fund type from bluebook or phase
+-----------------------------------------------------------------------------------------------
+  v_BlueBookRec              BlueBook%ROWTYPE;
+  v_PhaseRec                 Phase%ROWTYPE;
+BEGIN
+  IF (p_BluebookAckCode IS NULL) THEN
+    SELECT b.*
+      INTO v_BlueBookRec
+      FROM BlueBook b
+      WHERE b.Mail_Code = p_MailCode
+        AND b.Program = p_Program;
+    IF (v_BluebookRec.Ack_Code IS NOT NULL) THEN
+      p_AckCode     := v_BluebookRec.Ack_Code;
+    ELSIF (p_PhaseAckCode IS NULL) THEN
+      SELECT p.*
+        INTO v_PhaseRec
+        FROM Phase p
+        WHERE p.Pkg = v_BlueBookRec.Pkg
+          AND p.Phase = v_BlueBookRec.Phase;
+      p_AckCode  := v_PhaseRec.Ack_Code;
+    ELSE
+      p_AckCode  := p_PhaseAckCode;
+    END IF;
+  ELSE
+    p_AckCode := p_BluebookAckCode;
+  END IF;
+END DftAckCode;
+
+PROCEDURE DftCodes(p_AccountID  IN NUMBER,
+                   p_MailCode   IN Bluebook.Mail_Code%TYPE,
+                                     p_Program    IN Bluebook.Program%TYPE) AS
+-----------------------------------------------------------------------------------------------
+--  Procedure Name: DftCodes
+--  Client Name:    All
+--  Date Written:   6/3/2007
+--  Author:         David Brown
+--  Purpose:        Sets default flags and interest code from bluebook
+-----------------------------------------------------------------------------------------------
+  v_BlueBookRec              BlueBook%ROWTYPE;
+
+BEGIN
+  SELECT b.*
+    INTO v_BlueBookRec
+    FROM BlueBook b
+    WHERE b.Mail_Code = p_MailCode
+      AND b.Program = p_Program;
+-----------------------------------------------------------------------------------------------
+-- Update Default Flags Assigned on BlueBook record
+-----------------------------------------------------------------------------------------------
+  IF (v_BluebookRec.Flag1 IS NOT NULL) THEN
+    UPD.AddFlag(p_AccountID,v_BluebookRec.Flag1,'AUTO');
+  END IF;
+  IF (v_BluebookRec.Flag2 IS NOT NULL) THEN
+    UPD.AddFlag(p_AccountID,v_BluebookRec.Flag2,'AUTO');
+  END IF;
+  IF (v_BluebookRec.Flag3 IS NOT NULL) THEN
+    UPD.AddFlag(p_AccountID,v_BluebookRec.Flag3,'AUTO');
+  END IF;
+-----------------------------------------------------------------------------------------------
+-- Update Default Flags Assigned on BlueBook record
+-----------------------------------------------------------------------------------------------
+  IF (v_BluebookRec.Intr1 IS NOT NULL) THEN
+    UPD.AddInterest(p_AccountID,v_BluebookRec.Intr1,'AUTO');
+  END IF;
+  IF (v_BluebookRec.Intr2 IS NOT NULL) THEN
+    UPD.AddInterest(p_AccountID,v_BluebookRec.Intr2,'AUTO');
+  END IF;
+  IF (v_BluebookRec.Intr3 IS NOT NULL) THEN
+    UPD.AddInterest(p_AccountID,v_BluebookRec.Intr3,'AUTO');
+  END IF;
+END DftCodes;
+
+PROCEDURE DftSettings (p_DonationRec IN OUT Donation%ROWTYPE) AS
+-----------------------------------------------------------------------------------------------
+--  Procedure Name: DftSettings
+--  Client Name:    All Base 4.1
+--  Date Written:   3/31/2004
+--  Author:         David Brown
+--  Purpose:        Set default values and perform default behavior during donation posting
+--                  If Fund and Fund type is null then grab correct value from bluebook or phase
+--                  If ack code is null then grab correct value from bluebook or phase
+--                  Assign Default flags assigned to mailcode
+--                  Assign Default interests assigned to mailcode
+-----------------------------------------------------------------------------------------------
+  v_BlueBookRec              BlueBook%ROWTYPE;
+  v_PhaseRec                 Phase%ROWTYPE;
+BEGIN
+-----------------------------------------------------------------------------------------------
+-- Grab Bluebook and Phase information for donation
+-----------------------------------------------------------------------------------------------
+  SELECT b.*
+    INTO v_BlueBookRec
+    FROM BlueBook b
+    WHERE b.Mail_Code = p_DonationRec.MCD
+      AND b.Program = p_DonationRec.Prg;
+  SELECT p.*
+    INTO v_PhaseRec
+    FROM Phase p
+    WHERE p.Pkg = v_BlueBookRec.Pkg
+      AND p.Phase = v_BlueBookRec.Phase;
+-----------------------------------------------------------------------------------------------
+-- Set Fund Code and Fund Type
+-----------------------------------------------------------------------------------------------
+  IF (p_DonationRec.Fund IS NULL) OR (p_DonationRec.Fund = 'NOFUND') THEN
+    Donation_Prg.DftFund(p_DonationRec.MCD,
+                         p_DonationRec.Prg,
+                         p_DonationRec.Fund,
+                         p_DonationRec.Prg_Type,
+                         p_DonationRec.Batch,
+                         p_DonationRec.BDate,
+                         v_BluebookRec.Fund,
+                         v_BlueBookRec.Prg_Type,
+                         v_PhaseRec.Fund,
+                         v_PhaseRec.Prg_Type);
+  ELSIF (p_DonationRec.Prg_Type IS NULL) THEN
+    p_DonationRec.Prg_Type := NVL(v_BlueBookRec.Prg_Type,v_PhaseRec.Prg_Type);
+  END IF;
+-----------------------------------------------------------------------------------------------
+-- Set Ack Code
+-----------------------------------------------------------------------------------------------
+  IF (p_DonationRec.Ack_Code IS NULL) THEN
+    Donation_Prg.DftAckCode(p_DonationRec.MCD,p_DonationRec.Prg,p_DonationRec.Ack_Code,v_BluebookRec.Ack_Code,v_PhaseRec.Ack_Code);
+  END IF;
+-----------------------------------------------------------------------------------------------
+-- Update Default Flags Assigned on BlueBook record
+-----------------------------------------------------------------------------------------------
+  IF (v_BluebookRec.Flag1 IS NOT NULL) THEN
+    UPD.AddFlag(p_DonationRec.Account_ID,v_BluebookRec.Flag1,'AUTO');
+  END IF;
+  IF (v_BluebookRec.Flag2 IS NOT NULL) THEN
+    UPD.AddFlag(p_DonationRec.Account_ID,v_BluebookRec.Flag2,'AUTO');
+  END IF;
+  IF (v_BluebookRec.Flag3 IS NOT NULL) THEN
+    UPD.AddFlag(p_DonationRec.Account_ID,v_BluebookRec.Flag3,'AUTO');
+  END IF;
+-----------------------------------------------------------------------------------------------
+-- Update Default Flags Assigned on BlueBook record
+-----------------------------------------------------------------------------------------------
+  IF (v_BluebookRec.Intr1 IS NOT NULL) THEN
+    UPD.AddInterest(p_DonationRec.Account_ID,v_BluebookRec.Intr1,'AUTO');
+  END IF;
+  IF (v_BluebookRec.Intr2 IS NOT NULL) THEN
+    UPD.AddInterest(p_DonationRec.Account_ID,v_BluebookRec.Intr2,'AUTO');
+  END IF;
+  IF (v_BluebookRec.Intr3 IS NOT NULL) THEN
+    UPD.AddInterest(p_DonationRec.Account_ID,v_BluebookRec.Intr3,'AUTO');
+  END IF;
+-----------------------------------------------------------------------------------------------
+-- Set Defaults
+-----------------------------------------------------------------------------------------------
+  IF (p_DonationRec.Adj_Code IS NULL) THEN  p_DonationRec.Adj_Code := 'N'; END IF;
+  IF (p_DonationRec.Adj_Reason_Code IS NULL) THEN  p_DonationRec.Adj_Reason_Code := 'N'; END IF;
+  IF (p_DonationRec.No_Ack IS NULL) THEN  p_DonationRec.No_Ack := 'N'; END IF;
+  IF (p_DonationRec.No_Calc IS NULL) THEN  p_DonationRec.No_Calc := 'N'; END IF;
+  IF (p_DonationRec.Revenue IS NULL) THEN  p_DonationRec.Revenue := 'Y'; END IF;
+  IF (p_DonationRec.Amount IS NULL) THEN  p_DonationRec.Amount := 0; END IF;
+  --IF (p_DonationRec.Anonymous IS NULL) THEN  p_DonationRec.Anonymous := 'N'; END IF;
+  IF (p_DonationRec.Extra_Amount IS NULL) THEN  p_DonationRec.Extra_Amount := 0; END IF;
+  IF (p_DonationRec.Matched_Amount IS NULL) THEN  p_DonationRec.Matched_Amount := 0; END IF;
+  IF (p_DonationRec.Tax_Value IS NULL) THEN  p_DonationRec.Tax_Value := 0; END IF;
+  IF (p_DonationRec.High_Value IS NULL) THEN  p_DonationRec.High_Value := 0; END IF;
+  IF (p_DonationRec.Low_Value IS NULL) THEN  p_DonationRec.Low_Value := 0; END IF;
+  IF (p_DonationRec.Number_Shares IS NULL) THEN  p_DonationRec.Number_Shares := 0; END IF;
+  IF (p_DonationRec.FMDate IS NULL) THEN  p_DonationRec.FMDate := SYSDATE; END IF;
+  IF (p_DonationRec.UpdDt IS NULL) THEN  p_DonationRec.UpdDt := SYSDATE; END IF;
+  if (p_DonationRec.Non_Tax_Deduct_Amount is null) then p_DonationRec.Non_Tax_Deduct_Amount := 0; end if;
+END DftSettings;
+
+PROCEDURE DftRestriction(p_MailCode IN Donation.MCD%TYPE,
+                         p_Program IN Donation.Prg%TYPE,
+                         p_Restriction OUT Donation.Restriction%TYPE) AS
+----------------------------------------------------------------------------------------------
+--  Procedure Name: DftRestriction
+--  Client Name:    All Base 4.1
+--  Date Written:   15/09/2010
+--  Author:         Rick Holcombe
+--  Purpose:        Sets Restriction on a donation
+-----------------------------------------------------------------------------------------------
+BEGIN
+  IF Master_Par.ClientName IN ('ACLU','NRDC') THEN
+    EXECUTE IMMEDIATE 'SELECT RESTRICTION FROM BLUEBOOK b WHERE b.MAIL_CODE = :1 and b.PROGRAM = :2'
+      INTO p_Restriction
+      USING p_MailCode, p_Program;
+  ELSE
+    p_Restriction := 'UNDEFINED';
+  END IF;
+  /*
+      SELECT b.Restriction
+        INTO p_Restriction
+          FROM Bluebook b
+          WHERE b.Mail_Code = p_MailCode
+            AND b.Program = p_Program;
+
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        p_Restriction := 'UNDEFINED';
+  */
+END DftRestriction;
+
+
+PROCEDURE CloseGL(RecID     IN NUMBER,
+                  UserId    IN VARCHAR2,
+                  StartDate IN VARCHAR2,
+                  EndDate   IN VARCHAR2) IS
+-----------------------------------------------------------------------------------------------
+--  Procedure Name: Close_GL
+--  Client Name:    All Base 4.1
+--  Date Written:   ?
+--  Author:         Michael Burns
+--  Purpose:        Close donation for a specific time period of gifts that have been feed to GL
+--                  5/31/2005 DLB - Copied from Close_GL procedure
+--                  5/31/2005 DLB - Modifed to insert start aand end date
+--                                  into Close_GL_LOG table.
+-----------------------------------------------------------------------------------------------
+  v_sql                      VARCHAR2(500);
+  rcntr                      PLS_INTEGER := 0;
+  nowDate                    DATE := SYSDATE;
+  nowTime                    VARCHAR2(12) := TO_CHAR(SYSDATE, 'HH:MM:SS AM');
+  openBatches                NUMBER(4) := 0;
+  errResult                  NUMBER(1) := 0;
+  errLine                    VARCHAR2(4000);
+  BatError                   VARCHAR2(4000);
+  startDateSql               VARCHAR2(50);
+  endDateSql                 VARCHAR2(50);
+  BatNumGifts                NUMBER(8) := 0;
+  BatCount                   NUMBER(5) := 0;
+  BatTotalDollar             NUMBER(10,2) := 0.00;
+  DonNumGifts                NUMBER(8) := 0;
+  DonTotalDollar             NUMBER(10,2) := 0.00;
+  DonTotalExtra              NUMBER(10,2) := 0.00;
+  bl                         Batch_Log%ROWTYPE;
+  TYPE RefCur1 IS REF CURSOR;
+  c_Batch_Log RefCur1;
+---------------------------------E N D   V A R I A B L E S------------------------------------
+  PROCEDURE Inc(v_x IN OUT PLS_INTEGER) IS
+  BEGIN
+    v_x := v_x + 1;
+  END;
+  PROCEDURE DDec(v_x IN OUT PLS_Integer) IS
+  BEGIN
+    v_x := v_x - 1;
+  END;
+  PROCEDURE GetOpenBatches IS
+    v_sql                    VARCHAR2(200);
+  BEGIN
+    v_sql := 'select * from batch_log where bdate >= ' || startDateSql ||
+             ' and bdate <= ' || endDateSql || ' and flg <> ' || '''' || 'Y' || '''' ||
+             ' and num > 0';
+    OPEN c_Batch_Log FOR v_sql;
+    batError := '';
+    LOOP
+      FETCH c_batch_log INTO bl;
+      EXIT WHEN c_Batch_Log%NOTFOUND;
+      IF (batError IS NULL) THEN
+        batError := bl.batch;
+      ELSE
+        batError := batError || ',' || bl.batch;
+      END IF;
+    END LOOP;
+  END GetOpenBatches;
+  FUNCTION NumberOfOpenBatches RETURN NUMBER IS
+--    i                        PLS_INTEGER := 0;
+    sql_line                 VARCHAR2(500);
+    xcntr                    NUMBER(5);
+  BEGIN
+    sql_line := 'select count(*)  ' ||
+            '  from batch_log ' ||
+            '    where bDate >= ' || startDateSql ||
+            ' and bdate <=' || endDateSql ||
+            ' and Flg <> ' || '''' || 'Y' || '''' ||
+            ' and num > 0';
+    BEGIN
+      EXECUTE IMMEDIATE sql_line INTO  xcntr;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        xcntr := 0;
+    END;
+    IF xcntr > 0 THEN
+      GetOpenBatches;
+    END IF;
+    RETURN xcntr;
+  END NumberOfOpenBatches;
+  PROCEDURE DoUpdate IS
+    sql_line                 VARCHAR2(500);
+    xcntr                    NUMBER(8);
+  BEGIN
+    sql_line := 'update donation  ' ||
+            '  set Posted_to_gl = Trunc(SysDate) ' ||
+            '    where bDate >= ' || startDateSql ||
+                ' and bdate <=' || endDateSql ||
+                ' and posted_to_gl is null';
+    BEGIN
+      EXECUTE IMMEDIATE sql_line;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        xcntr := 0;
+    END;
+    xcntr := SQL%ROWCOUNT;
+    errResult := 0;
+    errLine := '# of Donations Updated: ' || xcntr;
+  END DoUpdate;
+  PROCEDURE AddToFieldValues(sLine  IN OUT VARCHAR2,
+                             sValue IN VARCHAR2) IS
+  BEGIN
+    inc(rcntr);
+    IF  rcntr = 1 THEN
+      sLine := '''' || sValue || '''';
+    ELSE
+      sLine := sLine || ', ' || '''' || sValue || '''';
+    END IF;
+  END AddToFieldValues;
+  PROCEDURE AddToFieldValues(sLine  IN OUT VARCHAR2,
+                             sValue IN NUMBER) IS
+  BEGIN
+    inc(rcntr);
+    IF rcntr = 1 THEN
+      sLine := sValue;
+    ELSE
+      sLine := sLine || ', ' || sValue;
+    END IF;
+  END AddToFieldValues;
+  PROCEDURE AddToFieldValues(sLine  IN OUT VARCHAR2,
+                             sValue IN DATE) IS
+  BEGIN
+    inc(rcntr);
+    IF rcntr = 1 THEN
+      sLine := '''' || sValue || '''';
+    ELSE
+      sLine := sLine || ', ' || '''' || sValue ||  '''';
+    END IF;
+  END AddToFieldValues;
+  procedure AddDetbase41lFieldNames(sLine      IN OUT VARCHAR2,
+                                    sFieldName IN VARCHAR2,
+                                    inum       IN PLS_INTEGER) IS
+  BEGIN
+    sLine := sLine || ', ' || sFieldName || '_' || inum;
+  END AddDetbase41lFieldNames;
+  PROCEDURE InsertRecord IS
+    InsFieldNames            VARCHAR2(1000);
+    InsFieldValues           VARCHAR2(3000);
+    sql_ins_line             VARCHAR2(4000);
+  BEGIN
+    -- wc we will create an array from the list of desired output fields, then loop thru and if each field thru a routine
+    InsFieldNames := 'Record_ID, UpdUserId, Upddt, UpdTime, Result_code, Result_line, Batch_Count, ' ||
+                     'Bat_Num_Gifts, Bat_Tot_Dollar, Don_num_Gifts, Don_Tot_Dollar, START_DATE, END_DATE ';
+    AddToFieldValues(InsFieldValues, RecID);
+    AddToFieldValues(InsFieldValues, UserID);
+    AddToFieldValues(InsFieldValues, nowDate);
+    AddToFieldValues(InsFieldValues, nowTime);
+    AddToFieldValues(InsFieldValues, errResult);
+    AddToFieldValues(InsFieldValues, errLine);
+    AddToFieldValues(InsFieldValues, NVL(BatCount,0));
+    AddToFieldValues(InsFieldValues, NVL(BatNumGifts,0));
+    AddToFieldValues(InsFieldValues, NVL(BatTotalDollar,0));
+    AddToFieldValues(InsFieldValues, NVL(DonNumGifts,0));
+    AddToFieldValues(InsFieldValues, NVL(DonTotalDollar,0));
+    AddToFieldValues(InsFieldValues, TO_DATE(StartDate,'YYYYMMDD'));
+    AddToFieldValues(InsFieldValues, TO_DATE(EndDate,'YYYYMMDD'));
+    sql_ins_line := 'Insert into close_gl_log (' || InsFieldNames || ') values ( ' || InsFieldValues || ' ) ';
+    BEGIN
+      EXECUTE IMMEDIATE sql_ins_line;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        sql_ins_line := 'Error';
+    END;
+  END InsertRecord;
+  PROCEDURE CreateDateRangeSql IS
+  BEGIN
+    startDateSql := ' to_date(' ||
+            '''' || startDate || '''' ||  ', ' || '''' || 'yyyymmdd' || '''' ||
+            ') ';
+    endDateSql := ' to_date(' ||
+            '''' || endDate || '''' ||  ', ' || '''' || 'yyyymmdd' || '''' ||
+            ') ';
+  END CreateDateRangeSql;
+  PROCEDURE GetBatchTotals IS
+    sql_line                 VARCHAR2(500);
+  BEGIN
+    BatCount := 0;
+    BatNumGifts := 0;
+    BatTotalDollar := 0;
+    sql_line := 'select count(*), sum(Num), sum(amount)  ' ||
+            '  from batch_log ' ||
+            '    where bDate >= ' || startDateSql ||
+            ' and bdate <=' || endDateSql;
+    BEGIN
+      EXECUTE IMMEDIATE sql_line INTO BatCount, BatNumGifts, BatTotalDollar;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        BatCount := 0;
+    END;
+  END GetBatchTotals;
+  PROCEDURE GetDonTotals IS
+    sql_line                 VARCHAR2(500);
+  BEGIN
+    DonNumGifts := 0;
+    DonTotalDollar := 0;
+    DonTotalExtra := 0;
+    sql_line := 'select Count(*), sum(amount), sum(Extra_amount)  ' ||
+            '  from donation ' ||
+            '    where bDate >= ' || startDateSql ||
+            ' and bdate <=' || endDateSql;
+    BEGIN
+      EXECUTE IMMEDIATE sql_line INTO DonNumGifts, DonTotalDollar, DonTotalExtra;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        DonNumGifts := 0;
+    END;
+    DonTotalDollar := DonTotalDollar + DonTotalExtra;
+  END GetDonTotals;
+BEGIN
+  CreateDateRangeSql;
+  GetBatchTotals;
+  GetDonTotals;
+  openBatches := NumberOfOpenBatches;
+  IF openBatches > 0 THEN
+    errResult := 1;
+    errLine := 'The Following batches need balanced : '  || batError;
+    insertRecord;
+    RETURN;
+  END IF;
+  DoUpdate;
+  InsertRecord;
+END CloseGL;
+
+PROCEDURE SetTrackingID (p_DonationID  IN     Donation.Donation_ID%TYPE,
+                         p_PledgeID    IN     Donation.Pledge_ID%TYPE,
+                         p_AccountID   IN     Donation.Account_ID%TYPE,
+                         p_TrackingID  IN OUT Donation.Tracking_ID%TYPE) AS
+
+  v_has_Trp                  PLS_INTEGER := 0;
+-----------------------------------------------------------------------------------------------
+--  Function Name:  SetTrackingID
+--  Client Name:    All Base 5.6.15?
+--  Date Written:   08/14/2009
+--  Author:         Heidi Plott
+--  Purpose:        Set the tracking_id on the donation for solicitor management
+
+--  prm/22Oct2010, D-01295 and D-01275 and D-01274
+--   if called from a doation insert trigger, then first we have to see if pledge is in TRP
+--   If pledge IS, and is primary,
+--       then we move that TR into the donation.tracking_ID AND insert into TRD.
+--   if pledge IS, but is not primary, then we just insert into TRD
+--   BUT, inserting into TRD is tricky-  we tend to get dups!  So Heidi tried to use this
+--   work table.
+--  It should be fine to use this method for both the BI and BU as long as in the BU any old
+--  values are inserted to the work table for a "D" tran type.  And if a TR is the same, D's get done first,
+--  so it should all work out ok, even if a TR is deleted and then inserted into TRD.
+-----------------------------------------------------------------------------------------------
+BEGIN
+  IF NVL(p_PledgeID, 0) > 0 THEN
+    BEGIN
+      SELECT TRP.TRACKING_ID
+        INTO P_TrackingID
+        FROM TRACKING_RECORD_PLEDGE TRP, PLEDGE P
+       WHERE TRP.PLEDGE_ID = P_PledgeID
+         AND TRP.PRIMARY_IND = 'Y'
+         AND TRP.PLEDGE_ID = P.PLEDGE_ID
+         AND P.ACCOUNT_ID = P_AccountID;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        NULL;  -- the donaton.tracking_ID will be NULL when this executes
+    END;
+    -- This insert is for PRIMARY TR and any COPIES, so more than one record may be inserted
+    INSERT INTO SLM_DTR_MAINT_GBL_TMP(TRIGGER_ACTION,
+                                      TRACKING_ID,
+                                      DONATION_ID,
+                                      PRIMARY_IND,
+                                      UPDUSERID,
+                                      UPDDT)
+      SELECT 'I',
+             TRP.TRACKING_ID,
+             P_DONATIONID,
+             TRP.PRIMARY_IND,
+             'AUTO-T',
+             SYSTIMESTAMP
+        FROM TRACKING_RECORD_PLEDGE TRP
+       WHERE TRP.PLEDGE_ID = P_PLEDGEID;
+    v_has_TRP := SQL%rowcount;
+  END IF;
+
+  IF (NVL(p_TrackingID, 0) > 0) AND (v_has_TRP = 0) THEN
+    INSERT INTO SLM_DTR_MAINT_GBL_TMP(TRIGGER_ACTION,
+                                      TRACKING_ID,
+                                      DONATION_ID,
+                                      PRIMARY_IND,
+                                      UPDUSERID,
+                                      UPDDT)
+      SELECT 'I',
+             p_TrackingID,
+             p_DonationID,
+             'Y',
+             'AUTO-T',
+             SYSTIMESTAMP
+        FROM DUAL;
+  END IF;
+END SetTrackingID;
+
+PROCEDURE RemoveTrackingID (p_donation_id IN    donation.donation_id%TYPE,
+                            p_tracking_id IN donation.tracking_id%TYPE) AS
+-----------------------------------------------------------------------------------------------
+--  Function Name:  RemoveTrackingID
+--  Client Name:    All Base 5.6.15?
+--  Date Written:   08/14/2009
+--  Author:         Heidi Plott
+--  Purpose:        Remove the tracking_id on the donation for solicitor management
+-----------------------------------------------------------------------------------------------
+BEGIN
+    IF NVL(p_tracking_id, 0) > 0 THEN
+        INSERT INTO slm_dtr_maint_gbl_tmp (trigger_action, tracking_id, donation_id, primary_ind, upduserid, updDt)
+        VALUES ('D', p_tracking_id, p_donation_id, NULL, 'AUTO-T', sysTimestamp);
+    END IF;
+END RemoveTrackingID;
+
+PROCEDURE DeleteTrackingID (p_donation_id IN    donation.donation_id%TYPE,
+                            p_tracking_id IN donation.tracking_id%TYPE) AS
+-----------------------------------------------------------------------------------------------
+--  Function Name:  DeleteTrackingID
+--  Client Name:    All Base 5.6.15?
+--  Date Written:   08/26/2009
+--  Author:         Heidi Plott
+--  Purpose:        Delete all donation tracking information for solicitor management
+-----------------------------------------------------------------------------------------------
+BEGIN
+    DELETE FROM tracking_record_donation
+    WHERE   donation_id = p_donation_id;
+END DeleteTrackingID;
+
+PROCEDURE MaintainTRDonation AS
+-----------------------------------------------------------------------------------------------
+--  Function Name:  MaintainTRDonation
+--  Client Name:    All Base 5.6.15?
+--  Date Written:   08/19/2009
+--  Author:         Heidi Plott
+--  Purpose:        Add/remove tracking_record_donation rows based on donation tracking_id value
+-----------------------------------------------------------------------------------------------
+  v_JobNum                   PLS_INTEGER;
+  v_NextDate                 DATE;
+BEGIN
+  -- 8/30/2013, PRM; D-04298, Each of these jobs process all tranactions in the tran-queue. So
+  -- no need to flood the job queue with these jobs, as that creates a problem.
+  Select count(*) into v_JobNum from user_jobs t where t.what like '%Donation_Prg.JobTRDonation%';
+  IF v_jobNum > 1 THEN
+        RETURN;
+  END IF;
+  -------------------------------------------------------------------------------------------
+  v_JobNum   := NULL;
+  v_NextDate := SYSDATE + 0.001; -- 0.000705 is one minute; so this is just a few seconds more
+  DBMS_JOB.Submit(v_JobNum,
+                  MASTER_PAR.ClientName || '.Donation_Prg.JobTRDonation;',
+                  v_NextDate); -- next date; normally a minute from now.
+END MaintainTRDonation;
+
+PROCEDURE JobTRDonation IS
+-----------------------------------------------------------------------------------------------
+--  Function Name:  JobTRDonation
+--  Client Name:    All Base 5.7 +
+--  Date Written:   10/18/2010
+--  Author:         Paul Mueller
+--  Purpose:        Add/remove tracking_record_donation rows based on donation tracking_id value
+--                  This procedure does not need to exist in the corresponding soft_credit_prg package,
+--                  as it can remove and insert donation and/or soft_credit related rows at the same time
+--                  However the soft_credit_prg.MaintainTRDonation does need
+--                  to correspond with its namesake in this package
+-----------------------------------------------------------------------------------------------
+  v_ActionID                 Special_Action_Flag.Action_Id%TYPE;
+  v_Start                    TIMESTAMP;
+
+BEGIN
+    -- we only want ONE of these functions to run at a time.  so to single thread, lock a resource
+  BEGIN
+     SELECT saf.Action_ID
+       INTO v_ActionID
+       FROM Special_Action_Flag saf
+      WHERE saf.Action_ID = 1500
+        FOR UPDATE;
+  EXCEPTION
+     WHEN NO_DATA_FOUND THEN
+       v_ActionID := 1500;
+      INSERT INTO SPECIAL_ACTION_FLAG(ACTION_ID,
+                                      ACTION_DESC,
+                                      ISACTIVE)
+        VALUES (v_ActionID,
+                'Do not change Action_ID 1500-2000.  This are reserved for production and database setting',
+                'Y');
+  END;
+  -- now delete link records that are alrady there...  we do not need to deal with trigger_action
+  v_Start := sysTimestamp;
+  DELETE FROM TRACKING_RECORD_DONATION TRD
+   WHERE EXISTS (SELECT NULL
+            FROM SLM_DTR_MAINT_GBL_TMP ST
+           WHERE (ST.DONATION_ID = TRD.DONATION_ID OR
+                 ST.SOFT_CREDIT_ID = TRD.SOFT_CREDIT_ID));
+-- 2014.12.15 : DLB : D-04715 : Added the following 2 deletes to take care of tracking records or donation records that have been deleted since
+--                              they have been added to the SLM_DTR_MAINT_GBL_TMP table.
+  DELETE FROM SLM_DTR_MAINT_GBL_TMP t
+    WHERE t.Donation_ID IS NOT NULL
+      AND t.donation_id > 0
+      AND(SELECT COUNT(*)
+            FROM Donation d
+           WHERE d.Donation_ID = t.Donation_Id) = 0;
+  DELETE FROM SLM_DTR_MAINT_GBL_TMP t
+    WHERE t.Tracking_ID IS NOT NULL
+      AND t.Tracking_ID > 0
+      AND(SELECT COUNT(*)
+            FROM Tracking_Record tr
+           WHERE tr.Tracking_Id = t.Tracking_Id) = 0;
+
+
+  INSERT INTO TRACKING_RECORD_DONATION
+    (TRACKING_ID, DONATION_ID, SOFT_CREDIT_ID, PRIMARY_IND, UPDUSERID)
+    (SELECT T.TRACKING_ID,
+            T.DONATION_ID,
+            T.SOFT_CREDIT_ID,
+            T.PRIMARY_IND,
+            T.UPDUSERID
+       FROM SLM_DTR_MAINT_GBL_TMP T
+      WHERE T.TRIGGER_ACTION = 'I'
+        AND T.UPDDT < V_START); -- not sure if this is needed?? idea is to be sure not to interfees with
+                                -- data that may have been added after this job started.
+  DELETE SLM_DTR_MAINT_GBL_TMP T WHERE T.UPDDT < V_START;
+  COMMIT;
+  -- Now, since results have changed, we need to be sure the summary tables get updated too
+  slm_sum_maint.MakeSummary_by_Layer;
+  -- ? When assignments are changed, will the roll-up summaries be updated?
+
+END JobTRDonation;
+
+END DONATION_PRG;
